@@ -3,12 +3,21 @@ Simplified main window for the PyUI Accelerator Visualization Prototype
 """
 
 from PyQt6.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, 
-                             QPushButton, QLabel, QStatusBar, QSlider, QSpinBox)
+                             QPushButton, QLabel, QStatusBar, QSlider, QSpinBox,
+                             QComboBox, QCheckBox, QGroupBox)
 from PyQt6.QtCore import Qt, QTimer
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import matplotlib.patches as patches
+import matplotlib.cm as cm
+import sys
+import os
+
+# Add the root directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from src.utils.physics import magnetic_field_for_radius
 
 class ParticleVisualization(FigureCanvas):
     """Widget for visualizing particle acceleration"""
@@ -28,6 +37,25 @@ class ParticleVisualization(FigureCanvas):
         self.particles_vx = np.zeros(self.num_particles)
         self.particles_vy = np.zeros(self.num_particles)
         
+        # Particle properties
+        self.particle_mass = 0.938  # Default: proton mass in GeV/c²
+        self.particle_charge = 1.0  # Default: proton charge
+        self.particle_type = "Proton"
+        self.particle_colors = {"Proton": "yellow", "Electron": "cyan", "Ion": "magenta"}
+        
+        # Magnetic field parameters
+        self.magnetic_field_enabled = False
+        self.magnetic_field_strength = 0.0  # Tesla
+        self.magnetic_field_direction = 1  # 1: into screen, -1: out of screen
+        self.magnetic_regions = []  # Will store visualization objects
+        
+        # Trajectory tracking
+        self.show_trajectories = False
+        self.trajectory_points = []
+        self.max_trajectory_points = 100
+        self.trajectory_update_freq = 3  # Update every N frames
+        self.trajectory_frame_count = 0
+        
         # Set up the timer for animation
         self.timer = QTimer()
         self.timer.setInterval(50)  # Update every 50ms
@@ -40,14 +68,101 @@ class ParticleVisualization(FigureCanvas):
     def plot(self):
         """Create the initial plot"""
         self.axes.clear()
+        
+        # Plot particles with proper color for particle type
+        particle_color = self.particle_colors.get(self.particle_type, "blue")
         self.scatter = self.axes.scatter(self.particles_x, self.particles_y, 
-                                         s=2, alpha=0.5, c='blue')
+                                         s=2, alpha=0.5, c='blue', cmap='plasma')
+        
+        # Draw magnetic field regions if enabled
+        self.magnetic_regions = []
+        if self.magnetic_field_enabled:
+            self._draw_magnetic_fields()
+            
+        # Draw any saved trajectories
+        if self.show_trajectories and self.trajectory_points:
+            for traj in self.trajectory_points:
+                if len(traj) > 1:  # Need at least 2 points for a line
+                    traj_x, traj_y = zip(*traj)
+                    self.axes.plot(traj_x, traj_y, '-', color='gray', linewidth=0.5, alpha=0.3)
+        
+        # Set plot properties
         self.axes.set_xlim(-10, 10)
         self.axes.set_ylim(-10, 10)
-        self.axes.set_title(f"Particle Acceleration Simulation\nEnergy: {self.energy} GeV")
+        title = f"Particle Acceleration Simulation\n{self.particle_type}s - Energy: {self.energy} GeV"
+        if self.magnetic_field_enabled:
+            title += f"\nMagnetic Field: {self.magnetic_field_strength:.2f} T"
+        self.axes.set_title(title)
         self.axes.grid(True)
         self.fig.tight_layout()
         self.draw()
+        
+    def _draw_magnetic_fields(self):
+        """Draw magnetic field region on the plot"""
+        # Clear previous magnetic regions
+        for region in self.magnetic_regions:
+            try:
+                region.remove()
+            except:
+                pass
+        self.magnetic_regions = []
+        
+        # Create magnetic field visualization
+        # We'll represent it as circular regions
+        field_regions = [
+            {'x': -5, 'y': 0, 'radius': 3},
+            {'x': 5, 'y': 0, 'radius': 3}
+        ]
+        
+        # Draw each magnetic field region
+        for region in field_regions:
+            # Color based on field direction
+            color = 'dodgerblue' if self.magnetic_field_direction > 0 else 'orangered'
+            alpha = min(0.3, abs(self.magnetic_field_strength) / 5.0) + 0.1
+            
+            # Create circle
+            circle = patches.Circle(
+                (region['x'], region['y']), 
+                region['radius'], 
+                color=color, 
+                alpha=alpha,
+                fill=True
+            )
+            self.axes.add_patch(circle)
+            self.magnetic_regions.append(circle)
+            
+            # Add field direction indicators (dots or crosses)
+            if abs(self.magnetic_field_strength) > 0.05:
+                symbol_coords = self._generate_field_symbol_coords(
+                    region['x'], region['y'], region['radius']
+                )
+                
+                if self.magnetic_field_direction > 0:  # Into screen (dots)
+                    for x, y in symbol_coords:
+                        dot = self.axes.plot(x, y, 'o', markersize=3, color=color, alpha=0.7)[0]
+                        self.magnetic_regions.append(dot)
+                else:  # Out of screen (crosses)
+                    for x, y in symbol_coords:
+                        # Draw the crosses as small line segments
+                        line1 = self.axes.plot([x-0.2, x+0.2], [y-0.2, y+0.2], '-', color=color, alpha=0.7)[0]
+                        line2 = self.axes.plot([x-0.2, x+0.2], [y+0.2, y-0.2], '-', color=color, alpha=0.7)[0]
+                        self.magnetic_regions.append(line1)
+                        self.magnetic_regions.append(line2)
+    
+    def _generate_field_symbol_coords(self, center_x, center_y, radius):
+        """Generate coordinates for magnetic field symbols within a region"""
+        num_symbols = int(10 * radius)  # Number of symbols based on region size
+        coords = []
+        
+        for _ in range(num_symbols):
+            # Random position within circle
+            r = radius * np.sqrt(np.random.random()) * 0.8  # Stay within 80% of radius
+            theta = np.random.random() * 2 * np.pi
+            x = center_x + r * np.cos(theta)
+            y = center_y + r * np.sin(theta)
+            coords.append((x, y))
+            
+        return coords
 
     def update_figure(self):
         """Update the figure animation"""
@@ -60,9 +175,20 @@ class ParticleVisualization(FigureCanvas):
         self.particles_vx += np.random.normal(0, 0.01 * accel_factor, self.num_particles)
         self.particles_vy += np.random.normal(0, 0.01 * accel_factor, self.num_particles)
         
+        # Apply magnetic field effects if enabled
+        if self.magnetic_field_enabled and abs(self.magnetic_field_strength) > 0.01:
+            self._apply_magnetic_field_effect()
+        
         # Update positions
         self.particles_x += self.particles_vx
         self.particles_y += self.particles_vy
+        
+        # Record trajectory points if enabled
+        if self.show_trajectories:
+            self.trajectory_frame_count += 1
+            if self.trajectory_frame_count >= self.trajectory_update_freq:
+                self.trajectory_frame_count = 0
+                self._update_trajectories()
         
         # Contain particles within boundaries (reflecting boundaries)
         out_of_bounds = np.abs(self.particles_x) > 10
@@ -79,6 +205,84 @@ class ParticleVisualization(FigureCanvas):
         self.scatter.set_array(velocities)
         
         self.draw()
+        
+    def _apply_magnetic_field_effect(self):
+        """Apply the effect of magnetic fields on particle velocities"""
+        # Magnetic field regions
+        field_regions = [
+            {'x': -5, 'y': 0, 'radius': 3},
+            {'x': 5, 'y': 0, 'radius': 3}
+        ]
+        
+        # Particle charge sign for force direction
+        charge_sign = self.particle_charge
+        
+        # Scale the effect based on field strength and charge
+        # F = q * v × B (Lorentz force law)
+        field_strength_effect = self.magnetic_field_strength * charge_sign * self.magnetic_field_direction * 0.01
+        
+        for region in field_regions:
+            # Calculate distance of each particle from the field center
+            dx = self.particles_x - region['x']
+            dy = self.particles_y - region['y']
+            distances = np.sqrt(dx**2 + dy**2)
+            
+            # Find particles within magnetic field region
+            in_field = distances <= region['radius']
+            
+            if not np.any(in_field):
+                continue
+                
+            # Apply circular motion effect to particles in the field
+            # For particles in magnetic field, v⊥ changes direction but not magnitude
+            # We'll approximate this with a rotation
+            
+            # Current velocity magnitudes
+            v_magnitudes = np.sqrt(
+                self.particles_vx[in_field]**2 + 
+                self.particles_vy[in_field]**2
+            )
+            
+            # Calculate the rotation angle based on velocity and field strength
+            # Θ = ω * Δt = qB/m * Δt
+            # Higher energy = less effect (relativistic mass increase)
+            angles = field_strength_effect * (100.0 / self.energy) * v_magnitudes
+            
+            # Rotate velocity vectors
+            cos_angles = np.cos(angles)
+            sin_angles = np.sin(angles)
+            
+            # Store original velocities
+            original_vx = self.particles_vx[in_field].copy()
+            original_vy = self.particles_vy[in_field].copy()
+            
+            # Apply rotation matrix
+            self.particles_vx[in_field] = original_vx * cos_angles - original_vy * sin_angles
+            self.particles_vy[in_field] = original_vx * sin_angles + original_vy * cos_angles
+            
+    def _update_trajectories(self):
+        """Update particle trajectory tracking"""
+        # Select a subset of particles to track
+        if not self.trajectory_points:
+            # Initialize trajectory tracking for 10 particles
+            sampled_indices = np.random.choice(
+                range(self.num_particles), 
+                min(10, self.num_particles), 
+                replace=False
+            )
+            self.trajectory_points = [[] for _ in sampled_indices]
+            self.tracked_particle_indices = sampled_indices
+        
+        # Add current positions to trajectories
+        for i, idx in enumerate(self.tracked_particle_indices):
+            # Keep only the last MAX_POINTS
+            if len(self.trajectory_points[i]) >= self.max_trajectory_points:
+                self.trajectory_points[i].pop(0)
+                
+            # Add current position
+            self.trajectory_points[i].append(
+                (self.particles_x[idx], self.particles_y[idx])
+            )
         
     def start_simulation(self):
         """Start the simulation"""
